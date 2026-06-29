@@ -140,7 +140,7 @@ esp_err_t sensors_acquire(sensorData_t *sensor)
 
     gyro_body.x =  gyro.x;
     gyro_body.y = -gyro.y;
-    gyro_body.z =  gyro.z;
+    gyro_body.z =  IMU_GYRO_Z_SIGN * gyro.z;
 
     if (!filter_initialized) {
         acc_lpf = acc_body;

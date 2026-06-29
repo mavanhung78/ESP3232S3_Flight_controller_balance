@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include <math.h>
 #include "board_config.h"
 #include "drivers/sbus.h"
 #include "esp_log.h"
@@ -122,7 +123,11 @@ static void update_setpoint_from_sbus(const sbus_frame_t *frame)
     const float roll = sbus_norm_center(frame->ch[SBUS_CH_ROLL]);
     const float pitch = sbus_norm_center(frame->ch[SBUS_CH_PITCH]);
     const float throttle = sbus_norm_throttle(frame->ch[SBUS_CH_THROTTLE]);
-    const float yaw = sbus_norm_center(frame->ch[SBUS_CH_YAW]);
+    float yaw = sbus_norm_center(frame->ch[SBUS_CH_YAW]);
+
+    if (fabsf(yaw) < YAW_STICK_DEADBAND) {
+        yaw = 0.0f;
+    }
     const float arm = sbus_norm_center(frame->ch[SBUS_CH_ARM]);
 
     const bool arm_switch_on = (arm > ARM_SWITCH_ON_THRESHOLD);

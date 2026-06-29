@@ -82,3 +82,13 @@
 #define ESC_PULSE_MIN_US          125.0f
 #define ESC_PULSE_MAX_US          250.0f
 #define ESC_PULSE_STOP_US         125.0f
+
+// ===================== Yaw tuning =====================
+#define MAX_YAW_RATE_DPS          60.0f
+#define YAW_STICK_DEADBAND        0.05f
+
+// Nếu drone quay yaw sai chiều, đổi 1.0f thành -1.0f
+#define YAW_MIX_SIGN              1.0f
+
+// Nếu log gyro.z sai chiều, đổi 1.0f thành -1.0f
+#define IMU_GYRO_Z_SIGN           1.0f

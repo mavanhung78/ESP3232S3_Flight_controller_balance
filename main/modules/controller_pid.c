@@ -8,15 +8,21 @@ typedef struct {
     float kp;
     float ki;
     float kd;
-    float i_limit;
-    float integ;
+
+    float output_limit;
+    float iterm_limit;
+
     float prev_error;
+    float prev_iterm;
     float d_lpf;
 } pid_axis_t;
 
-static pid_axis_t pid_roll;
-static pid_axis_t pid_pitch;
-static pid_axis_t pid_yaw;
+static pid_axis_t angle_roll;
+static pid_axis_t angle_pitch;
+
+static pid_axis_t rate_roll;
+static pid_axis_t rate_pitch;
+static pid_axis_t rate_yaw;
 
 static float constrainf_local(float v, float lo, float hi)
 {
@@ -25,57 +31,109 @@ static float constrainf_local(float v, float lo, float hi)
     return v;
 }
 
-static void pid_axis_init(pid_axis_t *p, float kp, float ki, float kd, float i_limit)
+static void pid_axis_init(pid_axis_t *p,
+                          float kp,
+                          float ki,
+                          float kd,
+                          float output_limit,
+                          float iterm_limit)
 {
     memset(p, 0, sizeof(*p));
+
     p->kp = kp;
     p->ki = ki;
     p->kd = kd;
-    p->i_limit = i_limit;
+
+    p->output_limit = output_limit;
+    p->iterm_limit = iterm_limit;
 }
 
-void controller_pid_init(void)
+static void pid_axis_reset(pid_axis_t *p)
 {
-    // PID khởi đầu an toàn cho drone ~190g, motor 1404, prop 3025, frame ~100mm
-    pid_axis_init(&pid_roll,  0.0022f, 0.00045f, 0.000012f, 0.06f);
-    pid_axis_init(&pid_pitch, 0.0022f, 0.00045f, 0.000012f, 0.06f);
-
-    // Yaw để thấp trước, vì yaw sai dễ làm drone xoay mạnh
-    pid_axis_init(&pid_yaw,   0.0010f, 0.00020f, 0.000000f, 0.04f);
+    p->prev_error = 0.0f;
+    p->prev_iterm = 0.0f;
+    p->d_lpf = 0.0f;
 }
 
-void controller_pid_reset(void)
-{
-    pid_roll.integ = 0.0f;
-    pid_roll.prev_error = 0.0f;
-    pid_roll.d_lpf = 0.0f;
-
-    pid_pitch.integ = 0.0f;
-    pid_pitch.prev_error = 0.0f;
-    pid_pitch.d_lpf = 0.0f;
-
-    pid_yaw.integ = 0.0f;
-    pid_yaw.prev_error = 0.0f;
-    pid_yaw.d_lpf = 0.0f;
-}
-
+/*
+ * PID equation kiểu Carbon:
+ *
+ * Pterm = P * error
+ * Iterm = PrevIterm + I * (error + prev_error) * dt / 2
+ * Dterm = D * (error - prev_error) / dt
+ *
+ * Khác Carbon một chút:
+ * - dùng dt thực tế thay vì cố định 0.004s
+ * - thêm lọc D-term để giảm nhiễu GY-85
+ * - output tính theo normalized motor correction
+ */
 static float pid_update(pid_axis_t *p, float error, float dt)
 {
     if (dt <= 0.0f || dt > 0.02f) {
         dt = 1.0f / (float)STABILIZER_RATE_HZ;
     }
 
-    p->integ += error * dt;
-    p->integ = constrainf_local(p->integ, -p->i_limit, p->i_limit);
+    float p_term = p->kp * error;
+
+    float i_term = p->prev_iterm + p->ki * (error + p->prev_error) * dt * 0.5f;
+    i_term = constrainf_local(i_term, -p->iterm_limit, p->iterm_limit);
 
     float derivative = (error - p->prev_error) / dt;
-    p->prev_error = error;
 
-    // D-term low-pass filter, giảm giật motor do nhiễu gyro
-    const float d_alpha = 0.18f;
+    // D low-pass filter, quan trọng với GY-85 vì motor gây nhiễu
+    const float d_alpha = 0.15f;
     p->d_lpf += d_alpha * (derivative - p->d_lpf);
 
-    return p->kp * error + p->ki * p->integ + p->kd * p->d_lpf;
+    float d_term = p->kd * p->d_lpf;
+
+    float output = p_term + i_term + d_term;
+    output = constrainf_local(output, -p->output_limit, p->output_limit);
+
+    p->prev_error = error;
+    p->prev_iterm = i_term;
+
+    return output;
+}
+
+void controller_pid_init(void)
+{
+    /*
+     * Angle loop giống Carbon:
+     * Angle error -> Desired rate
+     *
+     * Output của angle PID là deg/s.
+     * I và D để 0 trước cho an toàn.
+     */
+    pid_axis_init(&angle_roll,  2.4f, 0.0f, 0.0f, 120.0f, 0.0f);
+    pid_axis_init(&angle_pitch, 2.4f, 0.0f, 0.0f, 120.0f, 0.0f);
+
+    /*
+     * Rate loop:
+     * Desired rate - gyro rate -> motor correction
+     *
+     * Drone 190g, 1404, prop 3025, frame ~100mm:
+     * để gain mềm trước, tránh rung/nóng motor.
+     */
+    pid_axis_init(&rate_roll,  0.0020f, 0.00030f, 0.000000f, 0.08f, 0.04f);
+    pid_axis_init(&rate_pitch, 0.0020f, 0.00030f, 0.000000f, 0.08f, 0.04f);
+
+    /*
+     * Yaw rate PID:
+     * Bắt đầu rất nhẹ.
+     * Nếu yaw trôi chậm, tăng I yaw.
+     * Nếu yaw giật/quay mạnh, kiểm tra dấu yaw trước, không tăng PID.
+     */
+    pid_axis_init(&rate_yaw,   0.0008f, 0.00008f, 0.000000f, 0.04f, 0.025f);
+}
+
+void controller_pid_reset(void)
+{
+    pid_axis_reset(&angle_roll);
+    pid_axis_reset(&angle_pitch);
+
+    pid_axis_reset(&rate_roll);
+    pid_axis_reset(&rate_pitch);
+    pid_axis_reset(&rate_yaw);
 }
 
 void controller_pid_update(control_t *control,
@@ -96,22 +154,38 @@ void controller_pid_update(control_t *control,
         return;
     }
 
-    const float angle_kp = 2.8f;
-    const float max_rate_rp = 120.0f;
+    /*
+     * ================= Angle loop =================
+     * Giống Carbon:
+     * Desired angle - estimated angle -> desired angular rate
+     */
+    float error_angle_roll = setpoint->attitude.roll - state->attitude.roll;
+    float error_angle_pitch = setpoint->attitude.pitch - state->attitude.pitch;
 
-    const float roll_error_deg = setpoint->attitude.roll - state->attitude.roll;
-    const float pitch_error_deg = setpoint->attitude.pitch - state->attitude.pitch;
+    float desired_rate_roll = pid_update(&angle_roll, error_angle_roll, dt);
+    float desired_rate_pitch = pid_update(&angle_pitch, error_angle_pitch, dt);
 
-    const float roll_rate_sp = constrainf_local(angle_kp * roll_error_deg, -max_rate_rp, max_rate_rp);
-    const float pitch_rate_sp = constrainf_local(angle_kp * pitch_error_deg, -max_rate_rp, max_rate_rp);
-    const float yaw_rate_sp = constrainf_local(setpoint->attitudeRate.z, -MAX_YAW_RATE_DPS, MAX_YAW_RATE_DPS);
+    desired_rate_roll = constrainf_local(desired_rate_roll, -120.0f, 120.0f);
+    desired_rate_pitch = constrainf_local(desired_rate_pitch, -120.0f, 120.0f);
 
-    const float roll_rate_error = roll_rate_sp - sensor->gyro.x;
-    const float pitch_rate_error = pitch_rate_sp - sensor->gyro.y;
-    const float yaw_rate_error = yaw_rate_sp - sensor->gyro.z;
+    /*
+     * Yaw không dùng angle hold.
+     * Yaw chỉ dùng rate command từ tay điều khiển.
+     */
+    float desired_rate_yaw = constrainf_local(setpoint->attitudeRate.z,
+                                              -MAX_YAW_RATE_DPS,
+                                              MAX_YAW_RATE_DPS);
 
-    control->roll  = constrainf_local(pid_update(&pid_roll,  roll_rate_error,  dt), -0.08f, 0.08f);
-    control->pitch = constrainf_local(pid_update(&pid_pitch, pitch_rate_error, dt), -0.08f, 0.08f);
-    control->yaw   = constrainf_local(pid_update(&pid_yaw,   yaw_rate_error,   dt), -0.05f, 0.05f);
+    /*
+     * ================= Rate loop =================
+     */
+    float error_rate_roll = desired_rate_roll - sensor->gyro.x;
+    float error_rate_pitch = desired_rate_pitch - sensor->gyro.y;
+    float error_rate_yaw = desired_rate_yaw - sensor->gyro.z;
+
+    control->roll = pid_update(&rate_roll, error_rate_roll, dt);
+    control->pitch = pid_update(&rate_pitch, error_rate_pitch, dt);
+    control->yaw = pid_update(&rate_yaw, error_rate_yaw, dt);
+
     control->thrust = constrainf_local(setpoint->thrust, 0.0f, 1.0f);
 }
