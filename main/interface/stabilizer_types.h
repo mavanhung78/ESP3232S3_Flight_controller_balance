@@ -16,29 +16,42 @@ typedef struct {
 } attitude_t;
 
 typedef struct {
-    vec3f_t acc;     // G
-    vec3f_t gyro;    // deg/s
+    vec3f_t acc;       // G
+    vec3f_t gyro;      // deg/s
     uint64_t timestamp_us;
 } sensorData_t;
 
 typedef struct {
-    attitude_t attitude; // estimated roll/pitch/yaw [deg]
-    vec3f_t gyro;        // gyro rates copied from sensor [deg/s]
+    attitude_t attitude;
+    vec3f_t gyro;
 } state_t;
 
+typedef enum {
+    ARM_STATE_DISARMED = 0,
+    ARM_STATE_ARMING,
+    ARM_STATE_ARMED_IDLE,
+    ARM_STATE_FLYING,
+    ARM_STATE_FAILSAFE,
+    ARM_STATE_SENSOR_ERROR
+} arm_state_t;
+
 typedef struct {
-    attitude_t attitude;     // desired roll/pitch [deg]
-    vec3f_t attitudeRate;    // desired rate, yaw uses z [deg/s]
-    float thrust;            // normalized 0.0 - 1.0 from RC throttle
-    bool armed;
+    attitude_t attitude;
+    vec3f_t attitudeRate;
+
+    float thrust;          // 0.0 - 1.0
+    bool armed;            // true khi đã arm
+    bool flight_enabled;   // true khi cho phép PID điều khiển motor
     bool failsafe;
+
+    arm_state_t arm_state;
 } setpoint_t;
 
 typedef struct {
-    float thrust;  // normalized 0.0 - 1.0
-    float roll;    // normalized correction
-    float pitch;   // normalized correction
-    float yaw;     // normalized correction
+    float thrust;
+    float roll;
+    float pitch;
+    float yaw;
 } control_t;
 
 typedef struct {
